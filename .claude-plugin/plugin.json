@@ -1,0 +1,22 @@
+{
+  "name": "chatgpt-desktop",
+  "version": "0.4.0",
+  "description": "Drive the ChatGPT desktop app and its built-in Codex agent from Claude Code: chats, Codex threads with plan mode and goals, and a background watcher that reports when parallel Codex threads finish.",
+  "mcpServers": {
+    "chatgpt-desktop": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/server.mjs"
+      ]
+    }
+  },
+  "license": "MIT",
+  "keywords": [
+    "chatgpt",
+    "codex",
+    "mcp",
+    "desktop",
+    "automation",
+    "cdp"
+  ]
+}
