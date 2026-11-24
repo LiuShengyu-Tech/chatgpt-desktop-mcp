@@ -46,12 +46,15 @@
 |---|---|---|
 | `preflight` | 执行前检查：ChatGPT 是否在运行、调试端口是否打开、应用版本以及是否测试过、内部通道是否有响应。不会启动或重启任何东西。 | 无 |
 | `restart_chatgpt` | 带调试端口重启 ChatGPT。会关闭窗口并中断正在进行的任务，所以必须先征得你同意。 | `confirm: true` |
-| `codex_new_thread` | 为某个文件夹新建 Codex 会话，会立即出现在侧边栏。可附带第一条消息，也可用 Plan 模式发送。 | `cwd`、`prompt`、`plan`、`sandbox`（默认 `read-only`）、`wait`、`open` |
-| `codex_send` | 往会话里发消息；`plan: true` 表示用 Plan 模式。 | `thread_id`、`text`、`plan`、`wait`、`timeout_sec` |
+| `codex_new_thread` | 为某个文件夹新建 Codex 会话，会立即出现在侧边栏。可附带第一条消息，也可用 Plan 模式发送。 | `cwd`、`prompt`、`plan`、`sandbox`（默认 `read-only`）、`approval_policy`、`model`（默认 `gpt-6.2-astra`）、`effort`（默认 `high`）、`wait`、`open` |
+| `codex_send` | 往会话里发消息；`plan: true` 表示用 Plan 模式。 | `thread_id`、`text`、`plan`、`model`、`effort`、`wait`、`timeout_sec` |
+| `codex_models` | 列出这个 ChatGPT 应用里 Codex 可用的模型 id 和推理强度。 | — |
 | `codex_read` | 读取会话状态、Goal 和最近几轮的全部步骤：中途说明、计划、执行的命令及输出、文件改动、工具调用。 | `thread_id`、`last_turns` |
 | `codex_interrupt` | 停止正在进行的一轮（相当于点 Stop）。 | `thread_id` |
 | `codex_wait` | 同时等待多个会话：第一个（或全部）完成、或需要处理时返回，并附上回复。调用期间会一直阻塞，客户端能跑后台命令时，优先用下面的后台守望。 | `thread_ids`、`mode`、`timeout_sec` |
 | `codex_goal_set` / `codex_goal_get` / `codex_goal_clear` | 给会话设 Goal。它会一轮接一轮地自己干，直到标记完成（窗口里显示 "Pursuing goal"）。 | `thread_id`、`objective`、`status`、`token_budget` |
+
+新会话的默认模型和推理强度取自环境变量 `CODEX_MODEL` / `CODEX_EFFORT`（未设置时为 `gpt-6.2-astra` / `high`；设为空字符串则用应用自己的默认值）。
 
 `thread_id` 可以填 `codex_new_thread` 返回的 id，也可以填 `list_chats` 里的 `local:…` id。Goal 完成后应用会自动移除它，这时 `codex_goal_get` 返回 `null`。
 

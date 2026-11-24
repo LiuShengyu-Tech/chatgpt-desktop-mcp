@@ -453,11 +453,18 @@ async function threadInfo(threadId) {
   return { id: t.id, name: t.name, preview: t.preview, cwd: t.cwd, model: t.model, status: t.status };
 }
 
-async function startTurn(threadId, text, plan) {
+// Defaults for new threads and turns; override per call, or with CODEX_MODEL / CODEX_EFFORT env vars.
+// Set either to '' to fall back to the app's own default.
+const DEFAULT_MODEL = process.env.CODEX_MODEL ?? 'gpt-6.2-astra';
+const DEFAULT_EFFORT = process.env.CODEX_EFFORT ?? 'high';
+
+async function startTurn(threadId, text, plan, { model, effort } = {}) {
   const params = { threadId, input: [{ type: 'text', text, text_elements: [] }] };
+  if (model) params.model = model;
+  if (effort) params.effort = effort;
   if (plan !== undefined) {
-    const { model } = await threadInfo(threadId);
-    params.collaborationMode = { mode: plan ? 'plan' : 'default', settings: { model, developer_instructions: null } };
+    const m = model || (await threadInfo(threadId)).model;
+    params.collaborationMode = { mode: plan ? 'plan' : 'default', settings: { model: m, reasoning_effort: effort || null, developer_instructions: null } };
   }
   const r = await appServer('turn/start', params);
   if (!r?.turn?.id) throw new Error(`turn/start returned no turn id for thread ${threadId}; check codex_read before retrying, the message may have been sent.`);
@@ -715,16 +722,20 @@ const tools = {
         wait: { type: 'boolean', description: 'Wait for the first reply (default true).' },
         timeout_sec: { type: 'number', description: 'Max seconds to wait (default 600).' },
         open: { type: 'boolean', description: 'Also open the thread in the window (default false, so the user\'s current view is not changed).' },
+        model: { type: 'string', description: `Model id (see codex_models). Default ${DEFAULT_MODEL || "the app's default"}.` },
+        effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], description: `Reasoning effort. Default ${DEFAULT_EFFORT || "the model's default"}.` },
       },
     },
-    run: async ({ cwd, prompt, plan, sandbox = 'read-only', approval_policy = 'on-request', wait = true, timeout_sec = 600, open = false }) => {
+    run: async ({ cwd, prompt, plan, sandbox = 'read-only', approval_policy = 'on-request', wait = true, timeout_sec = 600, open = false, model = DEFAULT_MODEL, effort = DEFAULT_EFFORT }) => {
       const dir = checkCwd(cwd);
-      const r = await appServer('thread/start', { cwd: dir, sandbox, approvalPolicy: approval_policy });
+      const start = { cwd: dir, sandbox, approvalPolicy: approval_policy };
+      if (model) start.model = model;
+      const r = await appServer('thread/start', start);
       const threadId = r.thread?.id;
       if (!threadId) throw new Error('thread/start returned no thread id.');
-      const out = { thread_id: threadId, sidebar_id: `local:${threadId}`, cwd: r.cwd || dir, model: r.model, sandbox };
+      const out = { thread_id: threadId, sidebar_id: `local:${threadId}`, cwd: r.cwd || dir, model: r.model, effort: r.reasoningEffort ?? effort ?? undefined, sandbox };
       if (prompt) {
-        out.turn_id = await startTurn(threadId, prompt, plan ? true : undefined);
+        out.turn_id = await startTurn(threadId, prompt, plan ? true : undefined, { model, effort });
         if (open) { await sleep(1500); try { await evaluate(pageOpenChat, `local:${threadId}`, null); out.opened = true; } catch {} }
         if (wait) Object.assign(out, await waitTurn(threadId, out.turn_id, timeout_sec));
       }
@@ -741,13 +752,28 @@ const tools = {
         plan: { type: 'boolean' },
         wait: { type: 'boolean', description: 'Wait for the turn to finish (default true).' },
         timeout_sec: { type: 'number', description: 'Max seconds to wait (default 600).' },
+        model: { type: 'string', description: 'Switch the thread to this model id from this turn on (see codex_models). Omitted keeps the thread\'s model.' },
+        effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], description: 'Reasoning effort from this turn on. Omitted keeps the thread\'s setting.' },
       },
     },
-    run: async ({ thread_id, text, plan, wait = true, timeout_sec = 600 }) => {
+    run: async ({ thread_id, text, plan, wait = true, timeout_sec = 600, model, effort }) => {
       const threadId = tid(thread_id);
-      const turnId = await startTurn(threadId, text, plan);
+      const turnId = await startTurn(threadId, text, plan, { model, effort });
       if (!wait) return { thread_id: threadId, turn_id: turnId, sent: true };
       return { thread_id: threadId, ...(await waitTurn(threadId, turnId, timeout_sec)) };
+    },
+  },
+  codex_models: {
+    description: 'List the models Codex can use in this ChatGPT app (ids for the model parameter of codex_new_thread / codex_send), with their reasoning efforts and which one is the default.',
+    inputSchema: { type: 'object', properties: {} },
+    run: async () => {
+      const r = await appServer('model/list', {});
+      const data = (r.data || r.models || []).map(m => ({
+        id: m.id || m.model, name: m.displayName || m.display_name, default: m.isDefault ?? m.is_default,
+        efforts: (m.supportedReasoningEfforts || m.supported_reasoning_efforts || []).map(e => e.reasoningEffort || e.effort || e),
+        default_effort: m.defaultReasoningEffort || m.default_reasoning_effort,
+      }));
+      return { server_default_model: DEFAULT_MODEL || null, server_default_effort: DEFAULT_EFFORT || null, models: data };
     },
   },
   codex_wait: {

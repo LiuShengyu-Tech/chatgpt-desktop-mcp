@@ -30,8 +30,9 @@ These talk to the app's built-in Codex service through the window's own internal
 |---|---|
 | `preflight` | Check before the first use in a session: running, debugging port, app version (tested or not), channel answering. |
 | `restart_chatgpt` | Restart ChatGPT with the debugging port. Only with `confirm: true` after the user agreed. |
-| `codex_new_thread` | Create a thread for a folder (`cwd`), optionally with a first `prompt`, optionally `plan: true`. |
-| `codex_send` | Send a message to a thread; `plan: true` / `false` switches plan mode for that turn. |
+| `codex_new_thread` | Create a thread for a folder (`cwd`), optionally with a first `prompt`, optionally `plan: true`. `model` / `effort` default to `gpt-6.2-astra` / `high`. |
+| `codex_send` | Send a message to a thread; `plan: true` / `false` switches plan mode for that turn; `model` / `effort` switch them from that turn on. |
+| `codex_models` | List the model ids and reasoning efforts available. |
 | `codex_read` | Read status, goal and recent turns with exact commands, outputs and file changes. |
 | `codex_interrupt` | Stop the running turn. |
 | `codex_goal_set` / `_get` / `_clear` | Give a thread a goal it pursues on its own across turns; pause or clear it. |

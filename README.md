@@ -46,12 +46,15 @@ These send requests to the Codex service built into ChatGPT, through the same in
 |---|---|---|
 | `preflight` | Pre-run check: ChatGPT running? debugging port open? app version and whether it was tested? internal channel answering? Starts nothing. | none |
 | `restart_chatgpt` | Restart ChatGPT with the debugging port. Closes the window and interrupts running work, so only after you agree. | `confirm: true` |
-| `codex_new_thread` | New Codex thread for a folder; appears in the sidebar. Optional first message, optionally in plan mode. | `cwd`, `prompt`, `plan`, `sandbox` (default `read-only`), `wait`, `open` |
-| `codex_send` | Send a message to a thread; `plan: true` for plan mode. | `thread_id`, `text`, `plan`, `wait`, `timeout_sec` |
+| `codex_new_thread` | New Codex thread for a folder; appears in the sidebar. Optional first message, optionally in plan mode. | `cwd`, `prompt`, `plan`, `sandbox` (default `read-only`), `approval_policy`, `model` (default `gpt-6.2-astra`), `effort` (default `high`), `wait`, `open` |
+| `codex_send` | Send a message to a thread; `plan: true` for plan mode. | `thread_id`, `text`, `plan`, `model`, `effort`, `wait`, `timeout_sec` |
+| `codex_models` | List the model ids and reasoning efforts this ChatGPT app offers Codex. | — |
 | `codex_read` | Thread status, goal and latest turns with every step: notes, plan, commands with output, file changes, tool calls. | `thread_id`, `last_turns` |
 | `codex_interrupt` | Stop the running turn (like the Stop button). | `thread_id` |
 | `codex_wait` | Wait for several threads; returns when the first one (or all) finishes or needs attention, with its reply. Blocks the call, so prefer the background watcher below when your client can run background commands. | `thread_ids`, `mode`, `timeout_sec` |
 | `codex_goal_set` / `codex_goal_get` / `codex_goal_clear` | Give a thread a goal; it keeps working turn after turn until it marks the goal complete ("Pursuing goal" in the window). | `thread_id`, `objective`, `status`, `token_budget` |
+
+Default model and effort for new threads come from the `CODEX_MODEL` / `CODEX_EFFORT` environment variables (fallback `gpt-6.2-astra` / `high`; set to an empty string to use the app's own default).
 
 `thread_id` accepts the id from `codex_new_thread` or a `local:…` id from `list_chats`. A finished goal is removed by the app, so `codex_goal_get` then returns `null`.
 
