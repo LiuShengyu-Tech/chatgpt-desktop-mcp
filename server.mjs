@@ -422,10 +422,47 @@ async function appServer(method, params, timeoutMs = 30000) {
 const tid = id => String(id || '').replace(/^local:/, '');
 const clip = (s, n) => (s == null ? s : String(s).length > n ? String(s).slice(0, n) + `… [${String(s).length - n} more chars]` : String(s));
 
+// ------------------------------------------------ async questions ----
+// The agent can ask the user a question without stopping its turn ("request_user_input_async").
+// The app stores it as an agentMessage item with a `questions` array; the turn keeps running and no
+// activeFlag is set, so only these items show that the agent is waiting for an answer. The window
+// answers with a user (steering) message wrapped in <send_user_message_question_reply>, holding
+// [{ questionItemId, question, answer }], where questionItemId = JSON ["request_user_input_async", item id, index].
+const QREPLY_OPEN = '<send_user_message_question_reply>', QREPLY_CLOSE = '</send_user_message_question_reply>';
+const questionId = (itemId, i) => JSON.stringify(['request_user_input_async', itemId, i]);
+const unescapeXml = s => s.replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&quot;', '"').replaceAll('&apos;', "'").replaceAll('&amp;', '&');
+function userItemText(it) {
+  const parts = it.type === 'userMessage' ? it.content : it.type === 'steeringUserMessage' ? it.input : null;
+  return Array.isArray(parts) ? parts.map(c => c.text || '').join('\n') : '';
+}
+function questionAnswers(text) {
+  const out = [];
+  const re = /<send_user_message_question_reply>([\s\S]*?)<\/send_user_message_question_reply>/gi;
+  for (let m; (m = re.exec(text));) {
+    try { for (const r of [].concat(JSON.parse(unescapeXml(m[1].trim())))) if (r && r.questionItemId) out.push(r); } catch {}
+  }
+  return out;
+}
+// Every async question in these raw turns, with whether it has been answered (answers may come later).
+function asyncQuestions(rawTurns) {
+  const answers = new Map(), asked = [];
+  for (const t of rawTurns) for (const it of t.items || []) {
+    for (const a of questionAnswers(userItemText(it))) answers.set(a.questionItemId, a.answer);
+    if (it.type === 'agentMessage' && Array.isArray(it.questions) && it.questions.length) {
+      it.questions.forEach((q, i) => asked.push({ question_id: questionId(it.id, i), turn_id: t.id, asked_at_ms: it.startedAtMs ?? it.completedAtMs ?? null, question: q.title, options: q.options || [] }));
+    }
+  }
+  return asked.map(q => answers.has(q.question_id) ? { ...q, answered: true, answer: answers.get(q.question_id) } : { ...q, answered: false });
+}
+const pendingQuestions = rawTurns => asyncQuestions(rawTurns).filter(q => !q.answered);
+
 function formatItem(it) {
   switch (it.type) {
     case 'userMessage': return { type: 'user', text: (it.content || []).map(c => c.text || c.url || c.path || '').join('\n') };
-    case 'agentMessage': return { type: it.phase === 'final_answer' ? 'reply' : 'note', text: it.text };
+    case 'agentMessage':
+      if (Array.isArray(it.questions) && it.questions.length)
+        return { type: 'question', text: it.text, questions: it.questions.map((q, i) => ({ question_id: questionId(it.id, i), question: q.title, options: q.options || [] })) };
+      return { type: it.phase === 'final_answer' ? 'reply' : 'note', text: it.text };
     case 'plan': return { type: 'plan', text: it.text };
     case 'reasoning': { const s = (it.summary || []).map(x => typeof x === 'string' ? x : x.text).filter(Boolean).join('\n'); return s ? { type: 'reasoning', text: s } : null; }
     case 'commandExecution': return { type: 'command', command: it.command, cwd: it.cwd, status: it.status, exit_code: it.exitCode, output: clip(it.aggregatedOutput, 2000) };
@@ -439,7 +476,9 @@ function formatItem(it) {
 function formatTurn(t) {
   const items = (t.items || []).map(formatItem).filter(Boolean);
   const reply = [...items].reverse().find(i => i.type === 'reply' || i.type === 'plan');
-  return { turn_id: t.id, status: t.status, error: t.error || undefined, duration_ms: t.durationMs ?? undefined, reply: reply?.text ?? null, items };
+  const pending = pendingQuestions([t]);
+  return { turn_id: t.id, status: t.status, error: t.error || undefined, duration_ms: t.durationMs ?? undefined, reply: reply?.text ?? null,
+    pending_questions: pending.length ? pending : undefined, items };
 }
 
 async function latestTurns(threadId, limit, itemsView = 'full') {
@@ -473,7 +512,7 @@ async function startTurn(threadId, text, plan, { model, effort } = {}) {
 
 async function waitTurn(threadId, turnId, timeoutSec) {
   const deadline = Date.now() + timeoutSec * 1000;
-  let flags = [];
+  let flags = [], n = 0;
   while (Date.now() < deadline) {
     await sleep(2000);
     const turns = await latestTurns(threadId, 5, 'notLoaded');
@@ -483,6 +522,16 @@ async function waitTurn(threadId, turnId, timeoutSec) {
       return { finished: true, ...formatTurn(full) };
     }
     try { flags = (await threadInfo(threadId)).status?.activeFlags || []; } catch {}
+    // An async question does not stop the turn: return as soon as one is waiting for an answer.
+    if (++n % 3 === 0) {
+      try {
+        const full = await latestTurns(threadId, 5);
+        const q = pendingQuestions(full);
+        const cur = full.find(x => x.id === turnId);
+        if (q.length) return { finished: false, ...(cur ? formatTurn(cur) : { turn_id: turnId }), waiting_on: ['userInputAsync', ...flags], pending_questions: q,
+          note: 'The agent asked the user a question and keeps working meanwhile. Show the question to the user; answer with codex_answer only with the user\'s own answer.' };
+      } catch {}
+    }
   }
   const cur = (await latestTurns(threadId, 5)).find(x => x.id === turnId);
   return { finished: false, ...(cur ? formatTurn(cur) : { turn_id: turnId }), waiting_on: flags.length ? flags : undefined,
@@ -497,10 +546,15 @@ async function waitTurn(threadId, turnId, timeoutSec) {
 //   needs_attention - thread is running but blocked on something (activeFlags, e.g. an approval prompt)
 //   not_loaded      - the app has no such thread loaded (wrong id, or not running)
 //   error           - the thread could not be read for another reason
+//   needs_attention with waiting_on ['userInputAsync'] - the agent asked the user a question
+//                     (request_user_input_async) and keeps working; `questions` lists the unanswered ones.
+//                     Pass their question_id values in skipQuestions (CLI --skip-questions) to watch on
+//                     without being woken again for the same questions.
 // A thread that is already idle when the watch starts counts as finished right away.
 const GOAL_IDLE_GRACE_MS = 15000;
-async function watchThreads(ids, { mode = 'any', timeoutSec = 3600, intervalSec = 5 } = {}) {
+async function watchThreads(ids, { mode = 'any', timeoutSec = 3600, intervalSec = 5, skipQuestions = [] } = {}) {
   const pending = new Map(ids.map(id => [tid(id), { idleSince: 0 }]));
+  const skip = new Set(skipQuestions);
   const events = [];
   const deadline = Date.now() + timeoutSec * 1000;
   const report = async (threadId, kind, info, extra = {}) => {
@@ -529,7 +583,11 @@ async function watchThreads(ids, { mode = 'any', timeoutSec = 3600, intervalSec 
       const flags = info.status?.activeFlags || [];
       if (type === 'active') {
         st.idleSince = 0;
-        if (flags.length) await report(threadId, 'needs_attention', info, { waiting_on: flags });
+        if (flags.length) { await report(threadId, 'needs_attention', info, { waiting_on: flags }); continue; }
+        try {
+          const q = pendingQuestions(await latestTurns(threadId, 3)).filter(x => !skip.has(x.question_id));
+          if (q.length) await report(threadId, 'needs_attention', info, { waiting_on: ['userInputAsync'], questions: q });
+        } catch {}
         continue;
       }
       let goal = null;
@@ -539,7 +597,9 @@ async function watchThreads(ids, { mode = 'any', timeoutSec = 3600, intervalSec 
         if (Date.now() - st.idleSince < GOAL_IDLE_GRACE_MS) continue;
         await report(threadId, 'finished', info, { goal_status: 'active', note: 'Idle although its goal is still active.' });
       } else {
-        await report(threadId, 'finished', info, goal ? { goal_status: goal.status } : {});
+        let q = [];
+        try { q = pendingQuestions(await latestTurns(threadId, 3)); } catch {}
+        await report(threadId, 'finished', info, { ...(goal ? { goal_status: goal.status } : {}), ...(q.length ? { questions: q, note: 'Finished with unanswered questions.' } : {}) });
       }
     }
     if (events.length && (mode === 'any' || !pending.size)) break;
@@ -784,9 +844,37 @@ const tools = {
         thread_ids: { type: 'array', items: { type: 'string' } },
         mode: { type: 'string', enum: ['any', 'all'], description: 'Default any.' },
         timeout_sec: { type: 'number', description: 'Max seconds to wait (default 600).' },
+        skip_questions: { type: 'array', items: { type: 'string' }, description: 'question_id values already reported to the user; do not wake for these again.' },
       },
     },
-    run: ({ thread_ids, mode = 'any', timeout_sec = 600 }) => watchThreads(thread_ids || [], { mode, timeoutSec: timeout_sec }),
+    run: ({ thread_ids, mode = 'any', timeout_sec = 600, skip_questions = [] }) => watchThreads(thread_ids || [], { mode, timeoutSec: timeout_sec, skipQuestions: skip_questions }),
+  },
+  codex_answer: {
+    description: 'Answer a question the agent asked with request_user_input_async (shown as pending_questions / waiting_on userInputAsync), the same way the window does: a reply message wrapped in <send_user_message_question_reply>. While the turn runs it is steered into that turn; otherwise it starts a new turn. Only send the user\'s own answer, never one you made up.',
+    inputSchema: {
+      type: 'object', required: ['thread_id', 'answer'],
+      properties: {
+        thread_id: { type: 'string' },
+        answer: { type: 'string', description: 'The user\'s answer, in their words (or one of the question\'s options).' },
+        question_id: { type: 'string', description: 'Which question; default the only unanswered one.' },
+      },
+    },
+    run: async ({ thread_id, question_id, answer }) => {
+      const threadId = tid(thread_id);
+      const raw = await latestTurns(threadId, 5);
+      const open = pendingQuestions(raw);
+      const q = question_id ? open.find(x => x.question_id === question_id) : open.length === 1 ? open[0] : null;
+      if (!q) throw new Error(question_id ? `No unanswered question ${question_id}.` : open.length ? `Several unanswered questions; give question_id (${open.map(x => x.question_id).join(', ')}).` : 'No unanswered question in the latest turns.');
+      const body = JSON.stringify([{ questionItemId: q.question_id, question: q.question, answer: String(answer) }]);
+      const input = [{ type: 'text', text: `${QREPLY_OPEN}\n${body}\n${QREPLY_CLOSE}\n`, text_elements: [] }];
+      const running = raw.find(t => t.status === 'inProgress');
+      if (running) {
+        await appServer('turn/steer', { threadId, input, expectedTurnId: running.id });
+        return { thread_id: threadId, question_id: q.question_id, sent: true, via: 'turn/steer', turn_id: running.id };
+      }
+      const r = await appServer('turn/start', { threadId, input });
+      return { thread_id: threadId, question_id: q.question_id, sent: true, via: 'turn/start', turn_id: r?.turn?.id };
+    },
   },
   codex_read: {
     description: 'Read a Codex thread\'s status and its latest turns with every step (messages, plan, commands with output, file changes, tool calls). Works whether or not the thread is open in the window.',
@@ -800,10 +888,12 @@ const tools = {
     run: async ({ thread_id, last_turns = 3 }) => {
       const threadId = tid(thread_id);
       const info = await threadInfo(threadId);
-      const turns = (await latestTurns(threadId, last_turns)).reverse().map(formatTurn);
+      const raw = await latestTurns(threadId, last_turns);
+      const turns = [...raw].reverse().map(formatTurn);
       let goal = null;
       try { goal = (await appServer('thread/goal/get', { threadId })).goal || null; } catch {}
-      return { ...info, goal, turns };
+      const q = pendingQuestions(raw);
+      return { ...info, goal, pending_questions: q.length ? q : undefined, turns };
     },
   },
   codex_interrupt: {
@@ -883,28 +973,36 @@ async function handle(msg) {
 
 // CLI modes:
 //   node server.mjs call <tool> '<json args>'        run one tool (quick testing)
-//   node server.mjs wait [--all] [--timeout SEC] [--interval SEC] <thread id>...
+//   node server.mjs wait [--all] [--timeout SEC] [--interval SEC] [--skip-questions JSON] <thread id>...
 //       watch Codex threads; exits 0 with JSON events when the first (or, with --all, every)
 //       thread finishes or needs attention, 2 on timeout, 1 on error. Run it as a background
 //       command so the agent is notified when it exits.
+// Close the CDP websocket before exiting: exiting with it open can trip a libuv assertion on
+// Windows (UV_HANDLE_CLOSING) and turn a normal exit code into 127.
+function quit(code) {
+  process.exitCode = code;
+  try { conn?.ws?.close(); } catch {}
+  setTimeout(() => process.exit(code), 200).unref();
+}
 if (process.argv[2] === 'wait') {
   const args = process.argv.slice(3), ids = [], opt = { mode: 'any' };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--all') opt.mode = 'all';
     else if (args[i] === '--timeout') opt.timeoutSec = Number(args[++i]);
     else if (args[i] === '--interval') opt.intervalSec = Number(args[++i]);
+    else if (args[i] === '--skip-questions') (opt.skipQuestions ||= []).push(...JSON.parse(args[++i]));
     else ids.push(args[i]);
   }
-  if (!ids.length) { console.error('usage: node server.mjs wait [--all] [--timeout SEC] [--interval SEC] <thread id>...'); process.exit(1); }
+  if (!ids.length) { console.error('usage: node server.mjs wait [--all] [--timeout SEC] [--interval SEC] [--skip-questions \'["<question_id>",...]\'] <thread id>...'); process.exit(1); }
   watchThreads(ids, opt)
-    .then(o => { console.log(JSON.stringify(o, null, 2)); process.exit(o.timed_out ? 2 : 0); })
-    .catch(e => { console.error(e.message); process.exit(1); });
+    .then(o => { console.log(JSON.stringify(o, null, 2)); quit(o.timed_out ? 2 : 0); })
+    .catch(e => { console.error(e.message); quit(1); });
 } else if (process.argv[2] === 'call') {
   const t = tools[process.argv[3]];
   if (!t) { console.error('tools:', Object.keys(tools).join(', ')); process.exit(1); }
   t.run(JSON.parse(process.argv[4] || '{}'))
-    .then(o => { console.log(JSON.stringify(o, null, 2)); process.exit(0); })
-    .catch(e => { console.error(e.message); process.exit(1); });
+    .then(o => { console.log(JSON.stringify(o, null, 2)); quit(0); })
+    .catch(e => { console.error(e.message); quit(1); });
 } else {
   let buf = '';
   process.stdin.setEncoding('utf8');

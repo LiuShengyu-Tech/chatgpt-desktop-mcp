@@ -51,10 +51,13 @@
 | `codex_models` | 列出这个 ChatGPT 应用里 Codex 可用的模型 id 和推理强度。 | — |
 | `codex_read` | 读取会话状态、Goal 和最近几轮的全部步骤：中途说明、计划、执行的命令及输出、文件改动、工具调用。 | `thread_id`、`last_turns` |
 | `codex_interrupt` | 停止正在进行的一轮（相当于点 Stop）。 | `thread_id` |
+| `codex_answer` | 回答 Codex 不停下来就问的问题（`request_user_input_async`），做法和窗口一样：这一轮还在跑就插进这一轮，已结束就开新一轮。只传用户自己的回答。 | `thread_id`、`answer`、`question_id` |
 | `codex_wait` | 同时等待多个会话：第一个（或全部）完成、或需要处理时返回，并附上回复。调用期间会一直阻塞，客户端能跑后台命令时，优先用下面的后台守望。 | `thread_ids`、`mode`、`timeout_sec` |
 | `codex_goal_set` / `codex_goal_get` / `codex_goal_clear` | 给会话设 Goal。它会一轮接一轮地自己干，直到标记完成（窗口里显示 "Pursuing goal"）。 | `thread_id`、`objective`、`status`、`token_budget` |
 
 新会话的默认模型和推理强度取自环境变量 `CODEX_MODEL` / `CODEX_EFFORT`（未设置时为 `gpt-6.2-astra` / `high`；设为空字符串则用应用自己的默认值）。
+
+Codex 不停下这一轮就向用户提问（`request_user_input_async`）时，既不会出现审批标记，这一轮也不结束。`codex_read` 会把这些问题列在 `pending_questions` 里；`codex_wait`、后台守望和等待中的 `codex_send` 会报 `needs_attention`，`waiting_on: ["userInputAsync"]`，并附上问题。已转告用户的问题，把 `question_id` 放进 `skip_questions`（后台守望用 `--skip-questions '<JSON 数组>'`），就不会再因为它们被叫醒。
 
 `thread_id` 可以填 `codex_new_thread` 返回的 id，也可以填 `list_chats` 里的 `local:…` id。Goal 完成后应用会自动移除它，这时 `codex_goal_get` 返回 `null`。
 
