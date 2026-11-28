@@ -34,6 +34,7 @@ These talk to the app's built-in Codex service through the window's own internal
 | `codex_send` | Send a message to a thread; `plan: true` / `false` switches plan mode for that turn; `model` / `effort` switch them from that turn on. |
 | `codex_models` | List the model ids and reasoning efforts available. |
 | `codex_read` | Read status, goal and recent turns with exact commands, outputs and file changes. |
+| `codex_answer` | Answer a question the agent asked without stopping (`pending_questions`, `waiting_on: ["userInputAsync"]`), the way the window does. Only with the user's own answer. |
 | `codex_interrupt` | Stop the running turn. |
 | `codex_goal_set` / `_get` / `_clear` | Give a thread a goal it pursues on its own across turns; pause or clear it. |
 
@@ -45,10 +46,12 @@ Pattern for long work: `codex_new_thread` (or `codex_send`) with `wait: false`, 
 
 1. Dispatch every task with `wait: false` and keep the `thread_id`s.
 2. Start one background command (in Claude Code: Bash with `run_in_background: true`) that exits when the first thread has news:
-   `node <plugin dir>/server.mjs wait --timeout 3600 <id1> <id2> <id3>`
+   `node <plugin dir>/server.mjs wait --timeout 3600 <id1> <id2> <id3>` (add `--skip-questions '<JSON array of question_id>'` to ignore questions already handled)
    Add `--all` to exit only when every thread is done. Do other work meanwhile; you are notified when it exits.
 3. On the notification, read its JSON output. Each event has `thread_id`, `event` (`finished`, `needs_attention` with `waiting_on`, `not_loaded`, or `error`), `turn_status` and the clipped `reply`. Use `codex_read` for the full turn.
+   - `waiting_on: ["userInputAsync"]` means the agent asked the user a question (request_user_input_async) and keeps working meanwhile; the event's `questions` lists each unanswered one with `question_id`, `question` and `options`. These never set an approval flag or end the turn, so this is the only signal. A `finished` event can also carry unanswered `questions`.
 4. Decide the next step: check the result, send a follow-up with `codex_send` (again `wait: false`), start new threads, or report. For `needs_attention`, tell the user what is waiting in the ChatGPT window; do not answer approval prompts yourself.
+   - For a question: show it to the user (with the options) right away. When the user answers, either in the ChatGPT window or to you, pass their answer with `codex_answer`; never answer it yourself. Then start the next watcher with `--skip-questions '["<question_id>",...]'` for questions already shown, so it does not wake you again for the same ones.
 5. Start a new watcher on the ids in `still_running` plus any new threads. Repeat until nothing is left.
 
 Exit codes: 0 = events reported, 2 = timed out with nothing to report (`timed_out: true`), 1 = error.

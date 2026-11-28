@@ -51,10 +51,13 @@ These send requests to the Codex service built into ChatGPT, through the same in
 | `codex_models` | List the model ids and reasoning efforts this ChatGPT app offers Codex. | — |
 | `codex_read` | Thread status, goal and latest turns with every step: notes, plan, commands with output, file changes, tool calls. | `thread_id`, `last_turns` |
 | `codex_interrupt` | Stop the running turn (like the Stop button). | `thread_id` |
+| `codex_answer` | Answer a question the agent asked without stopping its turn (`request_user_input_async`), the way the window does: steered into the running turn, or a new turn if it has ended. Only pass the user's own answer. | `thread_id`, `answer`, `question_id` |
 | `codex_wait` | Wait for several threads; returns when the first one (or all) finishes or needs attention, with its reply. Blocks the call, so prefer the background watcher below when your client can run background commands. | `thread_ids`, `mode`, `timeout_sec` |
 | `codex_goal_set` / `codex_goal_get` / `codex_goal_clear` | Give a thread a goal; it keeps working turn after turn until it marks the goal complete ("Pursuing goal" in the window). | `thread_id`, `objective`, `status`, `token_budget` |
 
 Default model and effort for new threads come from the `CODEX_MODEL` / `CODEX_EFFORT` environment variables (fallback `gpt-6.2-astra` / `high`; set to an empty string to use the app's own default).
+
+Questions the agent asks without stopping its turn (`request_user_input_async`) set no approval flag and do not end the turn. `codex_read` lists them under `pending_questions`, and `codex_wait`, the background watcher and waiting `codex_send` report them as `needs_attention` with `waiting_on: ["userInputAsync"]` and the questions. Pass `skip_questions` (watcher: `--skip-questions '<JSON array>'`) with the `question_id` values already shown to the user to keep watching without being woken again for them.
 
 `thread_id` accepts the id from `codex_new_thread` or a `local:…` id from `list_chats`. A finished goal is removed by the app, so `codex_goal_get` then returns `null`.
 
